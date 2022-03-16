@@ -51,7 +51,7 @@ def get_result():
     all_messages = []
     while True:
         temp_mem_del_msg = []
-        for msg in aws_response_sqs_g19.receive_messages(MaxNumberOfMessages=10):
+        for msg in responseSqsQueue_45.receive_messages(MaxNumberOfMessages=10):
             # take only body of the message from the dictionary using json loads
             body = json.loads(msg.body)
             # add each of the messages into a temp list
