@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 @app.route('/', methods=['POST'])
 def upload_image_to_sqs():
-    # invoke the s3 bucket and sqs service using boto3 client
+    # invoke the sqs service using boto3 client
     sqs_queue_client = boto3.client('sqs', region_name='us-east-1')
     if request.method=="POST":
         for one_file in request.files.getlist('file'):
