@@ -10,7 +10,6 @@ from concurrent.futures import ThreadPoolExecutor
 import subprocess
 
 awsRegion = "us-east-1"
-# sqsInputQueueUrl = "https://sqs.us-east-1.amazonaws.com/229504196507/aws-sqs-g19"
 sqsInputQueueName = "aws-sqs-g19"
 sqsOutputQueueName = "aws-response-sqs-g19"
 s3InputBucketName = "g45-input-bucket"
@@ -75,7 +74,7 @@ def getSqsQueue(queueParams) -> object:
     print("The url of the fetched SQS queue is: " + queue.url)
     print("The Supported attributes of this queue are as follows")
     for value in queue.attributes:
-        print("The attributes of the queue are: " + value)  # + " and type of this is: " + str(type(value))
+        print("The attributes of the queue are: " + value)
     return queue
 
 
@@ -89,6 +88,8 @@ def runImageClassification(message):
     messageBody = json.loads(message.get_body())
     if message.message_attributes is not None:
         messageRequestId = message.message_attributes.get('RequestId')
+    else:
+        messageRequestId = ''
 
     # Deleting the message on sqs as it is read properly.
     message.delete()
@@ -113,6 +114,7 @@ def runImageClassification(message):
     if not os.path.exists(localFileName):
         with open(localFileName, "wb") as file:
             file.write(image)
+            file.close()
     result = subprocess.run(['python3', 'face_recognition.py', localFileName], capture_output=True). \
         stdout.decode().strip()
     dictResult = {imageName: result, 'RequestId': messageRequestId}
