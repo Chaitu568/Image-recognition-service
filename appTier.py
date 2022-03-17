@@ -10,8 +10,8 @@ from concurrent.futures import ThreadPoolExecutor
 import subprocess
 
 awsRegion = "us-east-1"
-sqsInputQueueName = "aws-sqs-g19"
-sqsOutputQueueName = "aws-response-sqs-g19"
+sqsInputQueueName = "aws-request-sqs-g45"
+sqsOutputQueueName = "aws-response-sqs-g45"
 s3InputBucketName = "g45-input-bucket"
 s3OutputBucketName = "g45-output-bucket"
 teammateAccountID = "229504196507"  # Chaitanya's AWS Account ID.
