@@ -1,17 +1,24 @@
-# This is a sample Python script.
+# App Tier
 
-# Press ⌃R to execute it or replace it with your code.
-# Press Double ⇧ to search everywhere for classes, files, tool windows, actions, and settings.
+# The following python script runs the app tier functionalities of the project 1.
 
-
+import base64
+import json
+import os
 import boto3
+from concurrent.futures import ThreadPoolExecutor
+import subprocess
 
 awsRegion = "us-east-1"
 # sqsInputQueueUrl = "https://sqs.us-east-1.amazonaws.com/229504196507/aws-sqs-g19"
 sqsInputQueueName = "aws-sqs-g19"
+sqsOutputQueueName = "aws-response-sqs-g19"
 s3InputBucketName = "g45-input-bucket"
-s3InputBucketName = "g45-output-bucket"
-TeammateAccountID = "229504196507" # Chaitanaya's AWS Account ID.
+s3OutputBucketName = "g45-output-bucket"
+teammateAccountID = "229504196507"  # Chaitanya's AWS Account ID.
+sqsWaitTime = 5  # in seconds. Change to 20 or something more suitable later.
+sqsMaxNumberMessages = 2  # Number of messages to read from the queue. Change to 10 or something more suitable later
+maxThreadPoolWorkers = 5  # Better to keep it same as sqsMaxNumberMessages.
 
 
 def createS3Bucket(bucketParams) -> object:
@@ -44,7 +51,7 @@ def getS3Bucket(bucketParams) -> object:
     return bucket
 
 
-def getSqsQueue(queueParams):
+def getSqsQueue(queueParams) -> object:
     """
 
     :param queueParams:
@@ -72,83 +79,84 @@ def getSqsQueue(queueParams):
     return queue
 
 
-def processSqsMessages():
-    inputQueueParams = {"name": sqsInputQueueName, "accountId": TeammateAccountID, "region": awsRegion}
-    intputQueue = getSqsQueue(inputQueueParams)
-    print("Getting messages from SQS queue...")
-    workDir = "classifier"
+def runImageClassification(message):
+    """
 
+    :param message:
+    :return queue:
+    """
+    # Adding input to the input S3 bucket
+    messageBody = json.loads(message.get_body())
+    if message.message_attributes is not None:
+        messageRequestId = message.message_attributes.get('RequestId')
 
-# def getLenOfQueue(sqs_g19, sqsUrl_g19):
-#     response = sqs_g19.get_queue_attributes(QueueUrl=sqsUrl_g19, AttributeNames=['ApproximateNumberOfMessages', ])
-#     print(response, "Response")
-#     response = int(response['Attributes']['ApproximateNumberOfMessages'])
-#     return response
+    # Deleting the message on sqs as it is read properly.
+    message.delete()
 
-
-
-
-# def processImagesfromSQS():
-#   s3 = boto.s3.connect_to_region(awsRegion)
-#   sqs = boto.sqs.connect_to_region(awsRegion)
-#   sqsQueue =  sqs.lookup(sqsQueueName)
-#   print("Getting messages from SQS queue...")
-#   messages = sqsQueue.get_messages(wait_time_seconds=20)
-#   workDir = "classifier"
-#   if messages:
-#       for m in messages:
-#           job = json.loads(m.get_body())
-#           m.delete()
-#           action = job[0]
-#           if action == 'process':
-#               s3BucketName = job[1]
-#               s3Inputfolder = job[2]
-#               s3OutputFolder = job[3]
-#               fileName = job[4]
-#               status = processImageandSavetoS3(s3, s3BucketName, s3Inputfolder, s3OutputFolder, fileName, workDir)
-#               if (status):
-#                   print("Message processed correctly ...")
-#   else:
-#       print("No Messages")
-#
-#
-# def processImageandSavetoS3(s3, s3BucketName, s3Inputfolder, s3OutputFolder, fileName, workDir):
-#     file_type = fileName.split(".")[1]
-#     k=4
-#     if(file_type=="jpeg" or file_type=="JPEG"):
-#         k=5
-#     elif (file_type == "png" or file_type=="PNG"):
-#         k=4
-#     s3BucketInput = s3.get_bucket(s3BucketName+"-"+s3Inputfolder)
-#     s3BucketOutput = s3.get_bucket(s3BucketName+"-"+s3OutputFolder)
-#     downloadInputPath = os.path.join(workDir, fileName)
-#     downloadOutputPath =  os.path.join(workDir, fileName[:-k]+'.txt')
-#     remoteInputPath = fileName
-#     remoteOutputPath =  fileName[:-k]+'.txt'
-#     if not os.path.isdir(workDir):
-#         os.system('sudo mkdir work && sudo chmod 777 work')
-#     key = s3BucketInput.get_key(remoteInputPath)
-#     s3 = boto3.client('s3')
-#     s3.download_file(s3BucketName+"-"+"inputfolder", remoteInputPath, downloadInputPath)
-#     key.get_contents_to_filename(workDir+"/"+fileName)
-#     os.system('python3 classifier/image_classification.py '+downloadInputPath+' > '+downloadOutputPath)
-#     with open(downloadOutputPath) as f:
-#         content = f.readlines()
-#     with open(downloadOutputPath, "w") as f:
-#         f.write(str(remoteInputPath)+":"+content[0])
-#     key = Key(s3BucketOutput)
-#     key.key = remoteOutputPath
-#     key.set_contents_from_filename(downloadOutputPath)
-#     return True
-
-def main():
+    # Processing the image.
+    imageName, imageInString = messageBody[0].items()
+    image = base64.b64decode(imageInString).encode()
     inputBucketParams = {"name": s3InputBucketName, "region": awsRegion}
-    inputQueueParams = {"name": sqsInputQueueName, "accountId": TeammateAccountID, "region": awsRegion}
     inputBucket = getS3Bucket(inputBucketParams)
-    intputQueue = getSqsQueue(inputQueueParams)
+    inputBucket.put_object(Body=image, Key=imageName)
+
+    '''
+        Saving the received image string to a file and running classification algorithm.
+        The results are saved to a dictionary in the the following format.
+        {
+            'ImageFileName.jpg':'Result',
+            'RequestId': 'RequestId cached from input message'
+        }
+    '''
+    workdir = os.getcwd()
+    localFileName = os.path.join(workdir, imageName)
+    if not os.path.exists(localFileName):
+        with open(localFileName, "wb") as file:
+            file.write(image)
+    result = subprocess.run(['python3', 'face_recognition.py', localFileName], capture_output=True). \
+        stdout.decode().strip()
+    dictResult = {imageName: result, 'RequestId': messageRequestId}
+
+    # Saving the output to the output S3 bucket
+    outputBucketParams = {"name": s3OutputBucketName, "region": awsRegion}
+    outputBucket = getS3Bucket(outputBucketParams)
+    imageNameWithoutExt = os.path.splitext(imageName)[0]
+    outputBucket.put_object(Body=result, Key=imageNameWithoutExt)
+
+    # Deleting the local file to save space.
+    os.remove(localFileName)
+    return dictResult
+
+
+def processSqsMessages():
+    """
+    Receives the messages from the sqs queue and spawns them into worker threads to process it.
+    """
+    inputQueueParams = {"name": sqsInputQueueName, "accountId": teammateAccountID, "region": awsRegion}
+    inputQueue = getSqsQueue(inputQueueParams)
+    print("Getting messages from SQS queue...")
+    messages = inputQueue.receive_messages(MessageAttributeNames=['RequestId'],
+                                           WaitTimeSeconds=sqsWaitTime,
+                                           MaxNumberOfMessages=sqsMaxNumberMessages)
+    print(messages)
+    if messages:
+        print("Entering non-null block")
+        # Distributing the recognition tasks to multiple workers.
+        with ThreadPoolExecutor(max_workers=maxThreadPoolWorkers) as executor:
+            classificationResults = executor.map(runImageClassification, messages)
+
+        # Sending the results back to the output/response Sqs queue.
+        outputQueueParams = {"name": sqsOutputQueueName, "accountId": teammateAccountID, "region": awsRegion}
+        outputQueue = getSqsQueue(outputQueueParams)
+        for result in classificationResults:
+            print(result)
+            outputQueue.send_message(MessageBody=result, MessageAttributes={
+                'RequestId': result['RequestId']  # Need to add a request ID in the web tier.
+            })
+    else:
+        print("The messages received is null, exiting.....")
 
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    # createS3Bucket(bucketParams)
-    main()
+    processSqsMessages()
