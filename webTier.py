@@ -22,7 +22,7 @@ def createSqsQueue(queueName):
 def upload_image_to_sqs():
     # invoke the s3 bucket and sqs service using boto3 client
     sqs_queue_client = boto3.client('sqs', region_name='us-east-1')
-    inputSqsQueue_45 = createSqsQueue('')  # input_queue_name
+    inputSqsQueue_45 = createSqsQueue('aws-request-sqs-g45')  # input_queue_name
     if request.method == "POST":
         for one_file in request.files.getlist('file'):
             # reference for conversion taken from https://www.geeksforgeeks.org/python-convert-image-to-string-and-vice-versa/
@@ -46,14 +46,19 @@ def get_result():
     sqs = boto3.resource('sqs',
                          region_name='us-east-1'
                          )
-    responseSqsQueue_45 = createSqsQueue('')  # response_queue_name
+    responseSqsQueue_45 = createSqsQueue('aws-response-sqs-g45')  # response_queue_name
 
     all_messages = []
     while True:
         temp_mem_del_msg = []
         for msg in responseSqsQueue_45.receive_messages(MaxNumberOfMessages=10):
             # take only body of the message from the dictionary using json loads
-            body = json.loads(msg.body)
+            print(type(msg.body))
+            j_string = json.dumps(msg.body)
+            print(type(j_string))
+
+            body = json.loads(j_string)
+            print(type(body))
             # add each of the messages into a temp list
             all_messages.append(body)
             # keep track of each message id and its receipt handle to remove this
@@ -66,9 +71,16 @@ def get_result():
         else:
             deleted_message = responseSqsQueue_45.delete_messages(
                 Entries=temp_mem_del_msg)
-    print(len(all_messages))
-    return render_template('answers.html', ans=all_messages)
+    keys = []
+
+    for msgg in all_messages:
+        final_message = eval(msgg)
+        for key, val in final_message.items():
+            keys.append( key + ' - ' + val)
+
+    print(keys)
+    return render_template('answers.html', key=keys)
 
 
 if __name__ == '__main__':
-    app.run(debug= True)
+    app.run(debug = True)
