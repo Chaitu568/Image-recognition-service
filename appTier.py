@@ -5,6 +5,8 @@
 import base64
 import json
 import os
+import time
+import socket
 import boto3
 from concurrent.futures import ThreadPoolExecutor
 import subprocess
@@ -16,10 +18,19 @@ s3InputBucketName = "g45-input-bucket"
 s3OutputBucketName = "g45-output-bucket"
 teammateAccountID = "229504196507"  # Chaitanya's AWS Account ID.
 sqsWaitTime = 5  # in seconds. Change to 20 or something more suitable later.
-sqsMaxNumberMessages = 2  # Number of messages to read from the queue. Change to 10 or something more suitable later
-maxThreadPoolWorkers = 5  # Better to keep it same as sqsMaxNumberMessages.
+sqsMaxNumberMessages = 1  # Number of messages to read from the queue. Change to 10 or something more suitable later
+maxThreadPoolWorkers = 1  # Better to keep it same as sqsMaxNumberMessages.
+sleepTime = 5  # in seconds.
+instanceTerminationThresholdTime = 1  # in minutes
+'''
+    Number of idle executions allowed for the instance before terminating.
+        SleepTime : 5 seconds
+        instanceTerminationThreshold: 4 minutes
+'''
+ThresholdCount = (instanceTerminationThresholdTime * 60) / sleepTime
 
 
+# Sleep time is 5 seconds after one execution of processSqsMessages. If that function returns
 def createS3Bucket(bucketParams) -> object:
     """
 
@@ -72,9 +83,9 @@ def getSqsQueue(queueParams) -> object:
         QueueOwnerAWSAccountId=queueParams["accountId"]
     )
     print("The url of the fetched SQS queue is: " + queue.url)
-    print("The Supported attributes of this queue are as follows")
-    for value in queue.attributes:
-        print("The attributes of the queue are: " + value)
+    # print("The Supported attributes of this queue are as follows")
+    # for value in queue.attributes:
+    #     print("The attributes of the queue are: " + value)
     return queue
 
 
@@ -85,18 +96,19 @@ def runImageClassification(message):
     :return queue:
     """
     # Adding input to the input S3 bucket
-    messageBody = json.loads(message.get_body())
+    # print(message.body)
+    messageBody = json.loads(message.body)
     if message.message_attributes is not None:
         messageRequestId = message.message_attributes.get('RequestId')
     else:
         messageRequestId = ''
 
-    # Deleting the message on sqs as it is read properly.
-    message.delete()
-
     # Processing the image.
-    imageName, imageInString = messageBody[0].items()
-    image = base64.b64decode(imageInString).encode()
+    for key, value in messageBody.items():
+        imageName = key
+        imageInString = value
+    image = base64.decodebytes(str.encode(imageInString))
+    # image = base64.b64decode(imageInString).encode()
     inputBucketParams = {"name": s3InputBucketName, "region": awsRegion}
     inputBucket = getS3Bucket(inputBucketParams)
     inputBucket.put_object(Body=image, Key=imageName)
@@ -111,13 +123,19 @@ def runImageClassification(message):
     '''
     workdir = os.getcwd()
     localFileName = os.path.join(workdir, imageName)
+    print(localFileName)
     if not os.path.exists(localFileName):
         with open(localFileName, "wb") as file:
             file.write(image)
             file.close()
+    # Deleting the message on sqs as it is read properly.
+    message.delete()
+    print("Message " + str(imageName))
+
     result = subprocess.run(['python3', 'face_recognition.py', localFileName], capture_output=True). \
         stdout.decode().strip()
-    dictResult = {imageName: result, 'RequestId': messageRequestId}
+    # dictResult = {imageName: result, 'RequestId': messageRequestId}
+    dictResult = {imageName: result}
 
     # Saving the output to the output S3 bucket
     outputBucketParams = {"name": s3OutputBucketName, "region": awsRegion}
@@ -126,7 +144,11 @@ def runImageClassification(message):
     outputBucket.put_object(Body=result, Key=imageNameWithoutExt)
 
     # Deleting the local file to save space.
-    os.remove(localFileName)
+    if os.path.exists(localFileName):
+        os.remove(localFileName)
+
+    # Deleting the message on sqs as it is read properly.
+    message.delete()
     return dictResult
 
 
@@ -140,8 +162,8 @@ def processSqsMessages():
     messages = inputQueue.receive_messages(MessageAttributeNames=['RequestId'],
                                            WaitTimeSeconds=sqsWaitTime,
                                            MaxNumberOfMessages=sqsMaxNumberMessages)
-    print(messages)
     if messages:
+        idle = False
         print("Entering non-null block")
         # Distributing the recognition tasks to multiple workers.
         with ThreadPoolExecutor(max_workers=maxThreadPoolWorkers) as executor:
@@ -152,13 +174,53 @@ def processSqsMessages():
         outputQueue = getSqsQueue(outputQueueParams)
         for result in classificationResults:
             print(result)
-            outputQueue.send_message(MessageBody=result, MessageAttributes={
-                'RequestId': result['RequestId']  # Need to add a request ID in the web tier.
-            })
+            outputQueue.send_message(MessageBody=str(result))
+            # , MessageAttributes = {
+            #     'RequestId': result['RequestId']  # Need to add a request ID in the web tier.
+            # }
     else:
         print("The messages received is null, exiting.....")
+        idle = True
+    result = {"IsInstanceIdle": idle}
+    return result
 
 
-# Press the green button in the gutter to run the script.
+def stopCurrentInstance():
+    """
+        Stops the current running instance using its private DNS name.
+    """
+    ec2 = boto3.resource("ec2", region_name=awsRegion)
+    # Trying to get the private DNS name of this Ec2 instance.
+    # NOTE: Only works when deployed on ec2.
+    instanceHostName = socket.gethostname()
+    fetchInstanceApiParams = [{'Name': 'private-dns-name', 'Values': [instanceHostName]}]
+    print("Stopping this ec2 instance as it is dormant for the past " +
+          str(instanceTerminationThresholdTime) + " minutes")
+    ec2.instances.filter(Filters=fetchInstanceApiParams).stop()
+
+
+def main():
+    """
+    Main function that processes the incoming SQS messages in a loop periodically.
+    Also incorporates to auto-scale down the app tier when demand is low.
+
+    :parameter: None
+    :return: None
+    """
+    exiting = False
+    instanceIdleCount = 0
+    while not exiting:
+        print("Current instanceIdleCount is: " + str(instanceIdleCount))
+        result = processSqsMessages()
+        if result["IsInstanceIdle"]:
+            instanceIdleCount = instanceIdleCount + 1
+            if instanceIdleCount < ThresholdCount:
+                time.sleep(5)  # Sleep for 5 seconds and process the Sqs messages again.
+            else:
+                # The instance has been idle since the 'instanceTerminationThresholdTime' minutes.
+                stopCurrentInstance()
+                exiting = True
+
+
 if __name__ == '__main__':
-    processSqsMessages()
+    main()
